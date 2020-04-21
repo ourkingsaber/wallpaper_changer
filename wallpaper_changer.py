@@ -7,6 +7,7 @@ from PIL.ExifTags import TAGS
 from send2trash import send2trash
 import ctypes
 import glob
+import json
 import os
 import random
 import sys
@@ -16,7 +17,21 @@ import win32con
 import win32gui
 import wx
 
-GLOBAL_interval = 10
+GLOBAL_config = {
+    'interval': 10
+}
+
+last = []
+
+config_fn = r'D:\dev\wallpaper_changer\config.txt'
+
+def read_config():
+    with open(config_fn) as f:
+        GLOBAL_config.update(json.load(f))
+
+def save_config():
+    with open(config_fn, 'w') as f:
+        json.dump(GLOBAL_config, f, indent=2)
 
 def _setWallpaper(path, style='0'):
     key = win32api.RegOpenKeyEx(
@@ -38,6 +53,7 @@ def add_margin(pil_img, top, bottom, left, right, color):
 
 
 def set_wallpaper(fn):
+    global last
     img = Image.open(fn)
     width, height = img.size
     exif = img.getexif()
@@ -48,17 +64,25 @@ def set_wallpaper(fn):
     ratio = width / height / (16/9)
     style = '10' if .7 < ratio < 1.25 else '6'
     print(os.path.basename(fn))
+    if not last or fn != last[-1]:
+        last.append(fn)
+        if len(last) > 10:
+            last = last[-10:]
+    if height < 1000:
+        print('    - Small ({}x{})'.format(width, height))
     if ratio < .7:
         borders = [img.getpixel((i, j)) for i in (0, width-1)
                    for j in range(height)]
         counts = Counter(borders)
         color, cts = counts.most_common(1)[0]
         sim_ratio = cts / len(borders)
-        # print(round(sim_ratio, 2))
-        if sim_ratio > .5:
-            if height > 1500:
-                img = img.resize((int(width / height * 1440 + .5), 1440))
-            width, height = img.size
+        if sim_ratio > .01:
+            print('    - Edge Similarity: {}'.format(round(sim_ratio, 2)))
+        if sim_ratio > .01:
+            if height > 3000:
+                print('    - Large ({}x{})'.format(width, height))
+                img = img.resize((int(width / height * 3000 + .5), 3000))
+                width, height = img.size
             need_w = height / 9 * 16
             margin = int((need_w - width) / 2 + .5)
             img = add_margin(img, 0, 0, margin, margin, color)
@@ -81,6 +105,14 @@ def change_wallpaper(*args):
     current_fn = fn
     set_wallpaper(fn)
 
+def prev_wallpaper(*args):
+    global current_fn, last
+    if len(last) < 2:
+        return
+    fn = last[-2]
+    last = last[:-1]
+    current_fn = fn
+    set_wallpaper(fn)
 
 class RedirectText(object):
     def __init__(self, aWxTextCtrl):
@@ -100,7 +132,7 @@ class TabSetting(wx.Panel):
         st1 = wx.StaticText(self, label='Interval')
         hbox1.Add(st1, flag=wx.RIGHT, border=8)
         self.interval_ctrl = wx.TextCtrl(self)
-        self.interval_ctrl.write(str(GLOBAL_interval))
+        self.interval_ctrl.write(str(GLOBAL_config['interval']))
         hbox1.Add(self.interval_ctrl, proportion=1)
         vbox.Add(hbox1, flag=wx.EXPAND|wx.LEFT|wx.RIGHT|wx.TOP, border=10)
 
@@ -121,17 +153,17 @@ class TabSetting(wx.Panel):
         self.Bind(wx.EVT_BUTTON, self._update_interval, btn1)
     
     def _update_interval(self, *args):
-        global GLOBAL_interval
         try:
             interval = int(self.interval_ctrl.GetLineText(0))
             if interval < 1:
                 raise ValueError
         except ValueError:
             return
-        GLOBAL_interval = interval
+        GLOBAL_config['interval'] = interval
         scheduler.pause()
-        scheduler.reschedule_job('change', trigger='interval', minutes=GLOBAL_interval)
+        scheduler.reschedule_job('change', trigger='interval', minutes=GLOBAL_config['interval'])
         scheduler.resume()
+        save_config()
 
 
 class TabLog(wx.Panel):
@@ -179,6 +211,8 @@ class Example(wx.Frame):
         toolbar = self.CreateToolBar()
         tool_start = toolbar.AddTool(wx.ID_ANY, 'Start', wx.Bitmap(
             self._icon_folder + 'Start-icon.png'))
+        tool_prev = toolbar.AddTool(wx.ID_ANY, 'Previous', wx.Bitmap(
+            self._icon_folder + 'back-icon.png'))
         tool_next = toolbar.AddTool(wx.ID_ANY, 'Next', wx.Bitmap(
             self._icon_folder + 'forward-icon.png'))
         tool_stop = toolbar.AddTool(wx.ID_ANY, 'Stop', wx.Bitmap(
@@ -210,11 +244,24 @@ class Example(wx.Frame):
             change_wallpaper()
 
         self.Bind(wx.EVT_TOOL, resume, tool_start)
+        self.Bind(wx.EVT_TOOL, prev_wallpaper, tool_prev)
         self.Bind(wx.EVT_TOOL, change_wallpaper, tool_next)
         self.Bind(wx.EVT_TOOL, pause, tool_stop)
         self.Bind(wx.EVT_TOOL, rotate_left,  tool_left)
         self.Bind(wx.EVT_TOOL, rotate_right, tool_right)
         self.Bind(wx.EVT_TOOL, delete, tool_del)
+
+        # Create an accelerator table
+        self.accel_tbl = wx.AcceleratorTable([
+            (wx.ACCEL_CTRL, ord('S'), tool_start.GetId()),
+            (wx.ACCEL_CTRL, ord('P'), tool_stop.GetId()),
+            (wx.ACCEL_CTRL, ord('B'), tool_prev.GetId()),
+            (wx.ACCEL_CTRL, ord('N'), tool_next.GetId()),
+            (wx.ACCEL_CTRL, ord('D'), tool_del.GetId()),
+            (wx.ACCEL_CTRL, ord('L'), tool_left.GetId()),
+            (wx.ACCEL_CTRL, ord('R'), tool_right.GetId()),
+        ])
+        self.SetAcceleratorTable(self.accel_tbl)
 
 
 def main_gui():
@@ -232,16 +279,16 @@ def rotate_wallpaper(degree):
     img.save(current_fn)
     img.close()
     set_wallpaper(current_fn)
-    scheduler.resume()
 
 
 if __name__ == '__main__':
     current_fn = None
+    read_config()
     scheduler = BackgroundScheduler()
-    scheduler.add_job(change_wallpaper, 'interval', minutes=GLOBAL_interval, id='change')
+    scheduler.add_job(change_wallpaper, 'interval', minutes=GLOBAL_config['interval'], id='change')
     scheduler.start()
     main_gui()
 
 # change_wallpaper()
 
-# _setWallpaper(r'D:\Pictures\Eye Candy\tmp..jpg', '6')
+# set_wallpaper(r'D:\Pictures\Eye Candy\Hyouka\anime-pictures.net - 611370 - hyouka+kyoto animation - chitanda eru.png')
