@@ -4,18 +4,25 @@ from collections import Counter
 from functools import partial
 from PIL import Image, ExifTags
 from PIL.ExifTags import TAGS
+from selenium.webdriver import ChromeOptions
+from seleniumrequests import Chrome
+from selenium.common.exceptions import ElementNotVisibleException, NoSuchElementException, StaleElementReferenceException, TimeoutException
 from send2trash import send2trash
 import ctypes
 import glob
 import json
 import os
+import pandas as pd
 import random
+import subprocess
 import sys
 import time
 import win32api
 import win32con
 import win32gui
 import wx
+
+from category import cleanup
 
 GLOBAL_config = {
     'interval': 10
@@ -25,13 +32,16 @@ last = []
 
 config_fn = r'D:\dev\wallpaper_changer\config.txt'
 
+
 def read_config():
     with open(config_fn) as f:
         GLOBAL_config.update(json.load(f))
 
+
 def save_config():
     with open(config_fn, 'w') as f:
         json.dump(GLOBAL_config, f, indent=2)
+
 
 def _setWallpaper(path, style='0'):
     key = win32api.RegOpenKeyEx(
@@ -68,19 +78,17 @@ def set_wallpaper(fn):
         last.append(fn)
         if len(last) > 10:
             last = last[-10:]
-    if height < 1000:
-        print('    - Small ({}x{})'.format(width, height))
+    print('    - {} x {}'.format(width, height))
     if ratio < .7:
-        borders = [img.getpixel((i, j)) for i in (0, width-1)
+        borders = [img.getpixel((i, j)) for i in (0, 1, 2, width-3, width-2, width-1)
                    for j in range(height)]
         counts = Counter(borders)
         color, cts = counts.most_common(1)[0]
         sim_ratio = cts / len(borders)
         if sim_ratio > .01:
             print('    - Edge Similarity: {}'.format(round(sim_ratio, 2)))
-        if sim_ratio > .01:
+        if sim_ratio > .05:
             if height > 3000:
-                print('    - Large ({}x{})'.format(width, height))
                 img = img.resize((int(width / height * 3000 + .5), 3000))
                 width, height = img.size
             need_w = height / 9 * 16
@@ -105,6 +113,7 @@ def change_wallpaper(*args):
     current_fn = fn
     set_wallpaper(fn)
 
+
 def prev_wallpaper(*args):
     global current_fn, last
     if len(last) < 2:
@@ -113,6 +122,7 @@ def prev_wallpaper(*args):
     last = last[:-1]
     current_fn = fn
     set_wallpaper(fn)
+
 
 class RedirectText(object):
     def __init__(self, aWxTextCtrl):
@@ -134,10 +144,10 @@ class TabSetting(wx.Panel):
         self.interval_ctrl = wx.TextCtrl(self)
         self.interval_ctrl.write(str(GLOBAL_config['interval']))
         hbox1.Add(self.interval_ctrl, proportion=1)
-        vbox.Add(hbox1, flag=wx.EXPAND|wx.LEFT|wx.RIGHT|wx.TOP, border=10)
+        vbox.Add(hbox1, flag=wx.EXPAND | wx.LEFT |
+                 wx.RIGHT | wx.TOP, border=10)
 
         # vbox.Add((-1, 10))
-
 
         vbox.Add((-1, 25))
 
@@ -151,7 +161,7 @@ class TabSetting(wx.Panel):
         self.SetSizer(vbox)
 
         self.Bind(wx.EVT_BUTTON, self._update_interval, btn1)
-    
+
     def _update_interval(self, *args):
         try:
             interval = int(self.interval_ctrl.GetLineText(0))
@@ -161,7 +171,8 @@ class TabSetting(wx.Panel):
             return
         GLOBAL_config['interval'] = interval
         scheduler.pause()
-        scheduler.reschedule_job('change', trigger='interval', minutes=GLOBAL_config['interval'])
+        scheduler.reschedule_job(
+            'change', trigger='interval', minutes=GLOBAL_config['interval'])
         scheduler.resume()
         save_config()
 
@@ -169,11 +180,19 @@ class TabSetting(wx.Panel):
 class TabLog(wx.Panel):
     def __init__(self, parent):
         super().__init__(parent)
-        log = wx.TextCtrl(self, wx.ID_ANY, size=(480, 133),
-                          style=wx.TE_MULTILINE | wx.TE_READONLY | wx.HSCROLL)
+        vbox = wx.FlexGridSizer(1, 1, 0, 0)
+
+        log = wx.TextCtrl(self, wx.ID_ANY, style=wx.TE_MULTILINE |
+                          wx.TE_READONLY | wx.HSCROLL)
+        vbox.Add(log, flag=wx.EXPAND | wx.LEFT |
+                 wx.RIGHT | wx.TOP, border=2)
+        vbox.AddGrowableRow(0, 0)
+        vbox.AddGrowableCol(0, 0)
         # redirect text here
         redir = RedirectText(log)
         sys.stdout = redir
+
+        self.SetSizer(vbox)
 
 
 class Example(wx.Frame):
@@ -221,6 +240,16 @@ class Example(wx.Frame):
             self._icon_folder + 'Arrow-turn-left-icon.png'))
         tool_right = toolbar.AddTool(wx.ID_ANY, 'Right', wx.Bitmap(
             self._icon_folder + 'Arrow-turn-right-icon.png'))
+        tool_edit = toolbar.AddTool(wx.ID_ANY, 'Edit', wx.Bitmap(
+            self._icon_folder + 'edit-icon.png'))
+        tool_magnify = toolbar.AddTool(wx.ID_ANY, 'Magnify', wx.Bitmap(
+            self._icon_folder + 'search-icon.png'))
+        tool_clip = toolbar.AddTool(wx.ID_ANY, 'clipboard', wx.Bitmap(
+            self._icon_folder + 'copy-icon.png'))
+        tool_clean = toolbar.AddTool(wx.ID_ANY, 'cleanup', wx.Bitmap(
+            self._icon_folder + 'data-add-icon.png'))
+        tool_refresh = toolbar.AddTool(wx.ID_ANY, 'Refresh', wx.Bitmap(
+            self._icon_folder + 'Rules-icon.png'))
         tool_del = toolbar.AddTool(wx.ID_ANY, 'Delete', wx.Bitmap(
             self._icon_folder + 'Trash-icon.png'))
         # toolbar.SetToolBitmapSize((32, 32))
@@ -239,9 +268,32 @@ class Example(wx.Frame):
         def rotate_right(evt):
             rotate_wallpaper(270)
 
+        def refresh(evt):
+            global current_fn
+            cleanup()
+            try:
+                set_wallpaper(current_fn)
+            except FileNotFoundError:
+                bn, ext = os.path.splitext(current_fn)
+                fn = bn + '.png'
+                current_fn = fn
+                set_wallpaper(current_fn)
+            else:
+                return
+
         def delete(evt):
+            need_to_resume = False
+            if scheduler.state == 1:
+                scheduler.pause()
+                need_to_resume = True
+            print('    - Deleted')
             send2trash(current_fn)
             change_wallpaper()
+            if need_to_resume:
+                scheduler.resume()
+
+        def edit(evt):
+            os.startfile(current_fn)
 
         self.Bind(wx.EVT_TOOL, resume, tool_start)
         self.Bind(wx.EVT_TOOL, prev_wallpaper, tool_prev)
@@ -249,6 +301,11 @@ class Example(wx.Frame):
         self.Bind(wx.EVT_TOOL, pause, tool_stop)
         self.Bind(wx.EVT_TOOL, rotate_left,  tool_left)
         self.Bind(wx.EVT_TOOL, rotate_right, tool_right)
+        self.Bind(wx.EVT_TOOL, clipboard, tool_clip)
+        self.Bind(wx.EVT_TOOL, magnify, tool_magnify)
+        self.Bind(wx.EVT_TOOL, edit, tool_edit)
+        self.Bind(wx.EVT_TOOL, refresh, tool_refresh)
+        self.Bind(wx.EVT_TOOL, cleanup, tool_clean)
         self.Bind(wx.EVT_TOOL, delete, tool_del)
 
         # Create an accelerator table
@@ -256,7 +313,7 @@ class Example(wx.Frame):
             (wx.ACCEL_CTRL, ord('S'), tool_start.GetId()),
             (wx.ACCEL_CTRL, ord('P'), tool_stop.GetId()),
             (wx.ACCEL_CTRL, ord('B'), tool_prev.GetId()),
-            (wx.ACCEL_CTRL, ord('N'), tool_next.GetId()),
+            (wx.ACCEL_CTRL, ord('F'), tool_next.GetId()),
             (wx.ACCEL_CTRL, ord('D'), tool_del.GetId()),
             (wx.ACCEL_CTRL, ord('L'), tool_left.GetId()),
             (wx.ACCEL_CTRL, ord('R'), tool_right.GetId()),
@@ -281,11 +338,49 @@ def rotate_wallpaper(degree):
     set_wallpaper(current_fn)
 
 
+def clipboard(*args):
+    scheduler.pause()
+    pd.DataFrame([current_fn]).to_clipboard(index=False, header=False)
+
+
+def magnify(*args):
+    clipboard()
+
+    chrome_options = ChromeOptions()
+    chrome_options.add_argument('--ignore-certificate-errors')
+    chrome_options.add_argument("--test-type")
+    driver = Chrome(chrome_options=chrome_options,
+                    executable_path=r'D:\dev\chromedriver.exe')
+    driver.get('https://waifu2x.booru.pics/')
+
+    file_upload = driver.find_element_by_id('img')
+    file_upload.send_keys(current_fn)
+
+    go_button = driver.find_element_by_id('submit')
+    go_button.click()
+
+    while True:
+        try:
+            png_but = driver.find_element_by_css_selector(
+                '#img > a:nth-child(1)')
+            jpg_but = driver.find_element_by_css_selector(
+                '#img > a:nth-child(2)')
+            break
+        except NoSuchElementException:
+            time.sleep(5)
+    ext = os.path.splitext(current_fn)[1]
+    if ext == '.jpg':
+        jpg_but.click()
+    elif ext == '.png':
+        png_but.click
+
+
 if __name__ == '__main__':
     current_fn = None
     read_config()
     scheduler = BackgroundScheduler()
-    scheduler.add_job(change_wallpaper, 'interval', minutes=GLOBAL_config['interval'], id='change')
+    scheduler.add_job(change_wallpaper, 'interval',
+                      minutes=GLOBAL_config['interval'], id='change')
     scheduler.start()
     main_gui()
 
