@@ -28,7 +28,7 @@ animes = {
 
 def cleanup(*args):
     pwd = os.getcwd()
-    os.chdir(r'D:\Pictures\Eye Candy')
+    os.chdir(r'D:\SynologyDrive\Pictures\Eye Candy')
 
     # clean up suffix
     suffix = '_waifu2x'

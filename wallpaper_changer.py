@@ -25,12 +25,17 @@ import wx
 from category import cleanup
 
 GLOBAL_config = {
-    'interval': 10
+    'interval': 10,
+    'folder': r'D:\SynologyDrive\Pictures\Eye Candy',
 }
 
-last = []
+try:
+    with open(os.path.join(os.path.dirname(__file__), 'last.txt')) as f:
+        last = json.load(f)
+except Exception:
+    last = []
 
-config_fn = r'D:\dev\wallpaper_changer\config.txt'
+config_fn = os.path.join(os.path.dirname(__file__), 'config.txt')
 
 
 def read_config():
@@ -76,8 +81,10 @@ def set_wallpaper(fn):
     print(os.path.basename(fn))
     if not last or fn != last[-1]:
         last.append(fn)
-        if len(last) > 10:
-            last = last[-10:]
+        if len(last) > 1000:
+            last = last[-1000:]
+        with open(os.path.join(os.path.dirname(__file__), 'last.txt'), 'w+') as f:
+            json.dump(last, f, indent=2)
     print('    - {} x {}'.format(width, height))
     if ratio < .7:
         borders = [img.getpixel((i, j)) for i in (0, 1, 2, width-3, width-2, width-1)
@@ -94,8 +101,8 @@ def set_wallpaper(fn):
             need_w = height / 9 * 16
             margin = int((need_w - width) / 2 + .5)
             img = add_margin(img, 0, 0, margin, margin, color)
-            fn = r'd:\dev\wallpaper_changer\tmp{}'.format(
-                os.path.splitext(fn)[1])
+            fn = os.path.join(os.path.dirname(__file__), 
+                              'tmp{}'.format(os.path.splitext(fn)[1]))
             # print('\tPadding to 16:9')
             style = '10'
             img.save(fn)
@@ -106,9 +113,12 @@ def set_wallpaper(fn):
 
 def change_wallpaper(*args):
     global current_fn
-    folder = r'D:\Pictures\Eye Candy'
-    allpics = glob.glob(os.path.join(folder, '*/*.jpg')) + \
+    folder = GLOBAL_config['folder']
+    allpics = glob.glob(os.path.join(folder, '*.jpg')) + \
+        glob.glob(os.path.join(folder, '*.png')) + \
+        glob.glob(os.path.join(folder, '*/*.jpg')) + \
         glob.glob(os.path.join(folder, '*/*.png'))
+    allpics = list(set(allpics) - set(last))
     fn = random.choice(allpics)
     current_fn = fn
     set_wallpaper(fn)
@@ -144,23 +154,34 @@ class TabSetting(wx.Panel):
         self.interval_ctrl = wx.TextCtrl(self)
         self.interval_ctrl.write(str(GLOBAL_config['interval']))
         hbox1.Add(self.interval_ctrl, proportion=1)
-        vbox.Add(hbox1, flag=wx.EXPAND | wx.LEFT |
-                 wx.RIGHT | wx.TOP, border=10)
+        vbox.Add(hbox1, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
 
-        # vbox.Add((-1, 10))
+        hbox2 = wx.BoxSizer(wx.HORIZONTAL)
+        st1 = wx.StaticText(self, label='Folder')
+        hbox2.Add(st1, flag=wx.RIGHT, border=8)
+        self.folder_ctrl = wx.DirPickerCtrl(self)
+        self.folder_ctrl.SetPath(GLOBAL_config['folder'])
+        hbox2.Add(self.folder_ctrl, proportion=1)
+        vbox.Add(hbox2, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
 
         vbox.Add((-1, 25))
-
         hbox5 = wx.BoxSizer(wx.HORIZONTAL)
         btn1 = wx.Button(self, label='Apply', size=(70, 30))
         hbox5.Add(btn1)
-        # btn2 = wx.Button(panel, label='Close', size=(70, 30))
-        # hbox5.Add(btn2, flag=wx.LEFT | wx.BOTTOM, border=5)
         vbox.Add(hbox5, flag=wx.ALIGN_RIGHT | wx.RIGHT, border=10)
 
         self.SetSizer(vbox)
 
-        self.Bind(wx.EVT_BUTTON, self._update_interval, btn1)
+        self.Bind(wx.EVT_BUTTON, self._update_setting, btn1)
+    
+    def _update_setting(self, *args):
+        self._update_path()
+        self._update_interval()
+        save_config()
+
+    def _update_path(self, *args):
+        GLOBAL_config['folder'] = self.folder_ctrl.GetPath()
+        change_wallpaper()
 
     def _update_interval(self, *args):
         try:
@@ -174,7 +195,6 @@ class TabSetting(wx.Panel):
         scheduler.reschedule_job(
             'change', trigger='interval', minutes=GLOBAL_config['interval'])
         scheduler.resume()
-        save_config()
 
 
 class TabLog(wx.Panel):
@@ -199,7 +219,7 @@ class Example(wx.Frame):
 
     def __init__(self, *args, **kwargs):
         super(Example, self).__init__(*args, **kwargs)
-        self._icon_folder = r'D:/dev/wallpaper_changer/assets/'
+        self._icon_folder = os.path.join(os.path.dirname(__file__), 'assets')
 
         self.InitUI()
 
@@ -218,10 +238,10 @@ class Example(wx.Frame):
         sizer.Add(nb, 1, wx.EXPAND)
         panel.SetSizer(sizer)
 
-        self.SetIcon(wx.Icon("D:/dev/wallpaper_changer/assets/wall.png"))
-        self.SetSize((500, 250))
+        self.SetIcon(wx.Icon(os.path.join(self._icon_folder, "wall.png")))
+        self.SetSize((600, 300))
         self.SetTitle('Wallpaper Changer')
-        self.Centre()
+        # self.Centre()
 
     def OnQuit(self, e):
         self.Close()
@@ -229,29 +249,27 @@ class Example(wx.Frame):
     def _init_toolbar(self):
         toolbar = self.CreateToolBar()
         tool_start = toolbar.AddTool(wx.ID_ANY, 'Start', wx.Bitmap(
-            self._icon_folder + 'Start-icon.png'))
+            os.path.join(self._icon_folder, 'Start-icon.png')))
         tool_prev = toolbar.AddTool(wx.ID_ANY, 'Previous', wx.Bitmap(
-            self._icon_folder + 'back-icon.png'))
+            os.path.join(self._icon_folder, 'back-icon.png')))
         tool_next = toolbar.AddTool(wx.ID_ANY, 'Next', wx.Bitmap(
-            self._icon_folder + 'forward-icon.png'))
+            os.path.join(self._icon_folder, 'forward-icon.png')))
         tool_stop = toolbar.AddTool(wx.ID_ANY, 'Stop', wx.Bitmap(
-            self._icon_folder + 'Stop-red-icon.png'))
+            os.path.join(self._icon_folder, 'Stop-red-icon.png')))
         tool_left = toolbar.AddTool(wx.ID_ANY, 'Left', wx.Bitmap(
-            self._icon_folder + 'Arrow-turn-left-icon.png'))
+            os.path.join(self._icon_folder, 'Arrow-turn-left-icon.png')))
         tool_right = toolbar.AddTool(wx.ID_ANY, 'Right', wx.Bitmap(
-            self._icon_folder + 'Arrow-turn-right-icon.png'))
+            os.path.join(self._icon_folder, 'Arrow-turn-right-icon.png')))
         tool_edit = toolbar.AddTool(wx.ID_ANY, 'Edit', wx.Bitmap(
-            self._icon_folder + 'edit-icon.png'))
-        tool_magnify = toolbar.AddTool(wx.ID_ANY, 'Magnify', wx.Bitmap(
-            self._icon_folder + 'search-icon.png'))
+            os.path.join(self._icon_folder, 'edit-icon.png')))
         tool_clip = toolbar.AddTool(wx.ID_ANY, 'clipboard', wx.Bitmap(
-            self._icon_folder + 'copy-icon.png'))
+            os.path.join(self._icon_folder, 'copy-icon.png')))
         tool_clean = toolbar.AddTool(wx.ID_ANY, 'cleanup', wx.Bitmap(
-            self._icon_folder + 'data-add-icon.png'))
+            os.path.join(self._icon_folder, 'data-add-icon.png')))
         tool_refresh = toolbar.AddTool(wx.ID_ANY, 'Refresh', wx.Bitmap(
-            self._icon_folder + 'Rules-icon.png'))
+            os.path.join(self._icon_folder, 'Rules-icon.png')))
         tool_del = toolbar.AddTool(wx.ID_ANY, 'Delete', wx.Bitmap(
-            self._icon_folder + 'Trash-icon.png'))
+            os.path.join(self._icon_folder, 'Trash-icon.png')))
         # toolbar.SetToolBitmapSize((32, 32))
         toolbar.Realize()
 
@@ -302,7 +320,6 @@ class Example(wx.Frame):
         self.Bind(wx.EVT_TOOL, rotate_left,  tool_left)
         self.Bind(wx.EVT_TOOL, rotate_right, tool_right)
         self.Bind(wx.EVT_TOOL, clipboard, tool_clip)
-        self.Bind(wx.EVT_TOOL, magnify, tool_magnify)
         self.Bind(wx.EVT_TOOL, edit, tool_edit)
         self.Bind(wx.EVT_TOOL, refresh, tool_refresh)
         self.Bind(wx.EVT_TOOL, cleanup, tool_clean)
@@ -343,38 +360,6 @@ def clipboard(*args):
     pd.DataFrame([current_fn]).to_clipboard(index=False, header=False)
 
 
-def magnify(*args):
-    clipboard()
-
-    chrome_options = ChromeOptions()
-    chrome_options.add_argument('--ignore-certificate-errors')
-    chrome_options.add_argument("--test-type")
-    driver = Chrome(chrome_options=chrome_options,
-                    executable_path=r'D:\dev\chromedriver.exe')
-    driver.get('https://waifu2x.booru.pics/')
-
-    file_upload = driver.find_element_by_id('img')
-    file_upload.send_keys(current_fn)
-
-    go_button = driver.find_element_by_id('submit')
-    go_button.click()
-
-    while True:
-        try:
-            png_but = driver.find_element_by_css_selector(
-                '#img > a:nth-child(1)')
-            jpg_but = driver.find_element_by_css_selector(
-                '#img > a:nth-child(2)')
-            break
-        except NoSuchElementException:
-            time.sleep(5)
-    ext = os.path.splitext(current_fn)[1]
-    if ext == '.jpg':
-        jpg_but.click()
-    elif ext == '.png':
-        png_but.click
-
-
 if __name__ == '__main__':
     current_fn = None
     read_config()
@@ -385,5 +370,3 @@ if __name__ == '__main__':
     main_gui()
 
 # change_wallpaper()
-
-# set_wallpaper(r'D:\Pictures\Eye Candy\Hyouka\anime-pictures.net - 611370 - hyouka+kyoto animation - chitanda eru.png')
