@@ -1,3 +1,4 @@
 {
-  "interval": 1
+  "interval": 1,
+  "folder": "D:\\SynologyDrive\\Pictures\\Eye Candy"
 }

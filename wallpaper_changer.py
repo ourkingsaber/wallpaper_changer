@@ -28,6 +28,8 @@ GLOBAL_config = {
     'interval': 10,
     'folder': r'D:\SynologyDrive\Pictures\Eye Candy',
 }
+current_fn = None
+n_last = 1000
 
 try:
     with open(os.path.join(os.path.dirname(__file__), 'last.txt')) as f:
@@ -81,8 +83,8 @@ def set_wallpaper(fn):
     print(os.path.basename(fn))
     if not last or fn != last[-1]:
         last.append(fn)
-        if len(last) > 1000:
-            last = last[-1000:]
+        if len(last) > n_last:
+            last = last[-n_last:]
         with open(os.path.join(os.path.dirname(__file__), 'last.txt'), 'w+') as f:
             json.dump(last, f, indent=2)
     print('    - {} x {}'.format(width, height))
@@ -112,12 +114,13 @@ def set_wallpaper(fn):
 
 
 def change_wallpaper(*args):
-    global current_fn
+    global current_fn, n_last
     folder = GLOBAL_config['folder']
     allpics = glob.glob(os.path.join(folder, '*.jpg')) + \
         glob.glob(os.path.join(folder, '*.png')) + \
         glob.glob(os.path.join(folder, '*/*.jpg')) + \
         glob.glob(os.path.join(folder, '*/*.png'))
+    n_last = min(n_last, int(len(allpics) * .8))
     allpics = list(set(allpics) - set(last))
     fn = random.choice(allpics)
     current_fn = fn
