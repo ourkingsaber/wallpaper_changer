@@ -26,9 +26,12 @@ animes = {
     "yahari ore no seishun lovecome wa machigatteiru": "yahari ore no seishun love comedy wa machigatteiru",
 }
 
+pic_dir = r'D:\SynologyDrive\Pictures\Eye Candy' if os.name == 'nt' else '/Users/Joker/SynologyDrive/Pictures/Eye Candy'
+
+
 def cleanup(*args):
     pwd = os.getcwd()
-    os.chdir(r'D:\SynologyDrive\Pictures\Eye Candy')
+    os.chdir(pic_dir)
 
     # clean up suffix
     suffix = '_waifu2x'

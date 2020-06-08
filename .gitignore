@@ -3,3 +3,6 @@ tmp.jpg
 tmp.png
 config.txt
 *.pyc
+.vscode
+nohup.out
+.DS_Store

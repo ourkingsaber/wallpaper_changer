@@ -4,9 +4,6 @@ from collections import Counter
 from functools import partial
 from PIL import Image, ExifTags
 from PIL.ExifTags import TAGS
-from selenium.webdriver import ChromeOptions
-from seleniumrequests import Chrome
-from selenium.common.exceptions import ElementNotVisibleException, NoSuchElementException, StaleElementReferenceException, TimeoutException
 from send2trash import send2trash
 import ctypes
 import glob
@@ -17,16 +14,19 @@ import random
 import subprocess
 import sys
 import time
-import win32api
-import win32con
-import win32gui
 import wx
 
 from category import cleanup
 
+if os.name == 'nt':
+    import win32api
+    import win32con
+    import win32gui
+
 GLOBAL_config = {
     'interval': 10,
-    'folder': r'D:\SynologyDrive\Pictures\Eye Candy',
+    'folder': r'D:\SynologyDrive\Pictures\Eye Candy' if os.name == 'nt' else '/Users/Joker/SynologyDrive/Pictures/Eye Candy',
+    'safewp': r'D:\Photo\Gallery\_T1A5048-2-编辑.jpg' if os.name == 'nt' else '/Users/Joker/Pictures/Photo/Gallery/_T1A5048-2-编辑.jpg',
 }
 current_fn = None
 n_last = 1000
@@ -50,7 +50,7 @@ def save_config():
         json.dump(GLOBAL_config, f, indent=2)
 
 
-def _setWallpaper(path, style='0'):
+def _setWallpaperWin(path, style='0'):
     key = win32api.RegOpenKeyEx(
         win32con.HKEY_CURRENT_USER, "Control Panel\\Desktop", 0, win32con.KEY_SET_VALUE)
     # 最后的参数:2拉伸,0居中,6适应,10填充
@@ -58,6 +58,11 @@ def _setWallpaper(path, style='0'):
     win32api.RegSetValueEx(key, "TileWallpaper", 0, win32con.REG_SZ, "0")
     win32gui.SystemParametersInfo(
         win32con.SPI_SETDESKWALLPAPER, path, win32con.SPIF_SENDWININICHANGE)
+
+def _setWallpaperMac(path):
+    cmd = """osascript -e 'tell application "System Events" to set picture of every desktop to "{}"'"""
+    path = path.replace("'", """'"'"'""")
+    subprocess.Popen(cmd.format(path), shell=True)
 
 
 def add_margin(pil_img, top, bottom, left, right, color):
@@ -69,7 +74,7 @@ def add_margin(pil_img, top, bottom, left, right, color):
     return result
 
 
-def set_wallpaper(fn):
+def set_wallpaper_win(fn):
     global last
     img = Image.open(fn)
     width, height = img.size
@@ -103,14 +108,58 @@ def set_wallpaper(fn):
             need_w = height / 9 * 16
             margin = int((need_w - width) / 2 + .5)
             img = add_margin(img, 0, 0, margin, margin, color)
-            fn = os.path.join(os.path.dirname(__file__), 
+            fn = os.path.join(os.path.dirname(__file__),
                               'tmp{}'.format(os.path.splitext(fn)[1]))
             # print('\tPadding to 16:9')
             style = '10'
             img.save(fn)
 
     img.close()
-    _setWallpaper(fn, style)
+    _setWallpaperWin(fn, style)
+
+
+def set_wallpaper_mac(fn):
+    global last
+    img = Image.open(fn)
+    width, height = img.size
+    exif = img.getexif()
+    flip = False
+    if exif.get(274, 1) != 1:   # check for rotation
+        width, height = height, width
+        flip = True
+    ratio = width / height / (16/9)
+    print(os.path.basename(fn))
+    if not last or fn != last[-1]:
+        last.append(fn)
+        if len(last) > n_last:
+            last = last[-n_last:]
+        with open(os.path.join(os.path.dirname(__file__), 'last.txt'), 'w+') as f:
+            json.dump(last, f, indent=2)
+    print('    - {} x {}'.format(width, height))
+    if ratio < .7:
+        borders = [img.getpixel((i, j)) for i in (0, 1, 2, width-3, width-2, width-1)
+                   for j in range(height)]
+        counts = Counter(borders)
+        color, cts = counts.most_common(1)[0]
+        sim_ratio = cts / len(borders)
+        if sim_ratio > .01:
+            print('    - Edge Similarity: {}'.format(round(sim_ratio, 2)))
+        if sim_ratio <= .05:
+            color = (0, 0, 0)
+        if height > 3000:
+            img = img.resize((int(width / height * 3000 + .5), 3000))
+            width, height = img.size
+        need_w = height / 9 * 16
+        margin = int((need_w - width) / 2 + .5)
+        img = add_margin(img, 0, 0, margin, margin, color)
+        fn = os.path.join(os.path.dirname(__file__),
+                          'tmp{}'.format(os.path.splitext(fn)[1]))
+        img.save(fn)
+
+    img.close()
+    _setWallpaperMac(fn)
+
+set_wallpaper = set_wallpaper_mac if os.name == 'posix' else set_wallpaper_win
 
 
 def change_wallpaper(*args):
@@ -122,6 +171,8 @@ def change_wallpaper(*args):
         glob.glob(os.path.join(folder, '*/*.png'))
     n_last = min(n_last, int(len(allpics) * .8))
     allpics = list(set(allpics) - set(last))
+    if not allpics:
+        return
     fn = random.choice(allpics)
     current_fn = fn
     set_wallpaper(fn)
@@ -143,6 +194,9 @@ class RedirectText(object):
 
     def write(self, string):
         wx.CallAfter(self.out.WriteText, string)
+
+    def flush(self, *args):
+        return
 
 
 class TabSetting(wx.Panel):
@@ -176,7 +230,7 @@ class TabSetting(wx.Panel):
         self.SetSizer(vbox)
 
         self.Bind(wx.EVT_BUTTON, self._update_setting, btn1)
-    
+
     def _update_setting(self, *args):
         self._update_path()
         self._update_interval()
@@ -273,7 +327,8 @@ class Example(wx.Frame):
             os.path.join(self._icon_folder, 'Rules-icon.png')))
         tool_del = toolbar.AddTool(wx.ID_ANY, 'Delete', wx.Bitmap(
             os.path.join(self._icon_folder, 'Trash-icon.png')))
-        # toolbar.SetToolBitmapSize((32, 32))
+        tool_safe = toolbar.AddTool(wx.ID_ANY, 'Safe', wx.Bitmap(
+            os.path.join(self._icon_folder, 'Accept-icon.png')))
         toolbar.Realize()
 
         # set buttons callback
@@ -302,6 +357,18 @@ class Example(wx.Frame):
             else:
                 return
 
+        def rotate_wallpaper(degree):
+            scheduler.pause()
+            img = Image.open(current_fn)
+            img = img.rotate(degree, expand=True)
+            img.save(current_fn)
+            img.close()
+            set_wallpaper(current_fn)
+
+        def clipboard(*args):
+            scheduler.pause()
+            pd.DataFrame([current_fn]).to_clipboard(index=False, header=False)
+
         def delete(evt):
             need_to_resume = False
             if scheduler.state == 1:
@@ -316,17 +383,22 @@ class Example(wx.Frame):
         def edit(evt):
             os.startfile(current_fn)
 
+        def safe(evt):
+            scheduler.pause()
+            set_wallpaper(GLOBAL_config['safewp'])
+
         self.Bind(wx.EVT_TOOL, resume, tool_start)
         self.Bind(wx.EVT_TOOL, prev_wallpaper, tool_prev)
         self.Bind(wx.EVT_TOOL, change_wallpaper, tool_next)
         self.Bind(wx.EVT_TOOL, pause, tool_stop)
-        self.Bind(wx.EVT_TOOL, rotate_left,  tool_left)
+        self.Bind(wx.EVT_TOOL, rotate_left, tool_left)
         self.Bind(wx.EVT_TOOL, rotate_right, tool_right)
         self.Bind(wx.EVT_TOOL, clipboard, tool_clip)
         self.Bind(wx.EVT_TOOL, edit, tool_edit)
         self.Bind(wx.EVT_TOOL, refresh, tool_refresh)
         self.Bind(wx.EVT_TOOL, cleanup, tool_clean)
         self.Bind(wx.EVT_TOOL, delete, tool_del)
+        self.Bind(wx.EVT_TOOL, safe, tool_safe)
 
         # Create an accelerator table
         self.accel_tbl = wx.AcceleratorTable([
@@ -347,20 +419,6 @@ def main_gui():
     ex.Show()
     change_wallpaper()
     app.MainLoop()
-
-
-def rotate_wallpaper(degree):
-    scheduler.pause()
-    img = Image.open(current_fn)
-    img = img.rotate(degree, expand=True)
-    img.save(current_fn)
-    img.close()
-    set_wallpaper(current_fn)
-
-
-def clipboard(*args):
-    scheduler.pause()
-    pd.DataFrame([current_fn]).to_clipboard(index=False, header=False)
 
 
 if __name__ == '__main__':
