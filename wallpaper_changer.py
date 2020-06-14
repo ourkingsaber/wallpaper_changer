@@ -1,20 +1,22 @@
 # based on http://dzone.com/snippets/set-windows-desktop-wallpaper
-from apscheduler.schedulers.background import BackgroundScheduler
-from collections import Counter
-from functools import partial
-from PIL import Image, ExifTags
-from PIL.ExifTags import TAGS
-from send2trash import send2trash
 import ctypes
 import glob
 import json
 import os
-import pandas as pd
 import random
 import subprocess
 import sys
+import tempfile
 import time
+from collections import Counter
+from functools import partial
+
+import pandas as pd
 import wx
+from apscheduler.schedulers.background import BackgroundScheduler
+from PIL import ExifTags, Image
+from PIL.ExifTags import TAGS
+from send2trash import send2trash
 
 from category import cleanup
 
@@ -23,10 +25,12 @@ if os.name == 'nt':
     import win32con
     import win32gui
 
+syndrive = r'D:\SynologyDrive' if os.name == 'nt' else '/Users/Joker/SynologyDrive'
 GLOBAL_config = {
     'interval': 10,
-    'folder': r'D:\SynologyDrive\Pictures\Eye Candy' if os.name == 'nt' else '/Users/Joker/SynologyDrive/Pictures/Eye Candy',
-    'safewp': r'D:\Photo\Gallery\_T1A5048-2-编辑.jpg' if os.name == 'nt' else '/Users/Joker/Pictures/Photo/Gallery/_T1A5048-2-编辑.jpg',
+    'folder': os.path.join(syndrive, 'Pictures/Eye Candy'),
+    'safewp': r'D:\Photo\Gallery\_T1A5048-2-编辑.jpg' if os.name == 'nt'
+    else '/Users/Joker/Pictures/Photo/Gallery/_T1A5048-2-编辑.jpg',
 }
 current_fn = None
 n_last = 1000
@@ -50,7 +54,7 @@ def save_config():
         json.dump(GLOBAL_config, f, indent=2)
 
 
-def _setWallpaperWin(path, style='0'):
+def _setWallpaperWin(path, style='10'):
     key = win32api.RegOpenKeyEx(
         win32con.HKEY_CURRENT_USER, "Control Panel\\Desktop", 0, win32con.KEY_SET_VALUE)
     # 最后的参数:2拉伸,0居中,6适应,10填充
@@ -59,10 +63,16 @@ def _setWallpaperWin(path, style='0'):
     win32gui.SystemParametersInfo(
         win32con.SPI_SETDESKWALLPAPER, path, win32con.SPIF_SENDWININICHANGE)
 
+
 def _setWallpaperMac(path):
-    cmd = """osascript -e 'tell application "System Events" to set picture of every desktop to "{}"'"""
     path = path.replace("'", """'"'"'""")
-    subprocess.Popen(cmd.format(path), shell=True)
+    cmd = f"""osascript -e 'tell application "System Events" to set picture of every desktop to "{path}"' """
+    proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE)
+    proc.communicate()
+
+
+_setWallpaper = _setWallpaperMac if os.name == 'posix' else _setWallpaperWin
 
 
 def add_margin(pil_img, top, bottom, left, right, color):
@@ -74,7 +84,7 @@ def add_margin(pil_img, top, bottom, left, right, color):
     return result
 
 
-def set_wallpaper_win(fn):
+def set_wallpaper(fn):
     global last
     img = Image.open(fn)
     width, height = img.size
@@ -84,7 +94,6 @@ def set_wallpaper_win(fn):
         width, height = height, width
         flip = True
     ratio = width / height / (16/9)
-    style = '10' if .7 < ratio < 1.25 else '6'
     print(os.path.basename(fn))
     if not last or fn != last[-1]:
         last.append(fn)
@@ -93,73 +102,37 @@ def set_wallpaper_win(fn):
         with open(os.path.join(os.path.dirname(__file__), 'last.txt'), 'w+') as f:
             json.dump(last, f, indent=2)
     print('    - {} x {}'.format(width, height))
-    if ratio < .7:
-        borders = [img.getpixel((i, j)) for i in (0, 1, 2, width-3, width-2, width-1)
-                   for j in range(height)]
-        counts = Counter(borders)
-        color, cts = counts.most_common(1)[0]
-        sim_ratio = cts / len(borders)
-        if sim_ratio > .01:
-            print('    - Edge Similarity: {}'.format(round(sim_ratio, 2)))
-        if sim_ratio > .05:
-            if height > 3000:
-                img = img.resize((int(width / height * 3000 + .5), 3000))
+    if .8 < ratio < 1.25:
+        img.close()
+        _setWallpaper(fn)
+    else:
+        if ratio <= .8:
+            borders = [img.getpixel((i, j)) for i in (0, 1, 2, width-3, width-2, width-1)
+                    for j in range(height)]
+            counts = Counter(borders)
+            color, cts = counts.most_common(1)[0]
+            sim_ratio = cts / len(borders)
+            if sim_ratio > .01:
+                print('    - Edge Similarity: {}'.format(round(sim_ratio, 2)))
+            if sim_ratio <= .05:
+                color = (0, 0, 0)
+            if height > 2000:
+                img = img.resize((int(width / height * 2000 + .5), 2000))
                 width, height = img.size
             need_w = height / 9 * 16
             margin = int((need_w - width) / 2 + .5)
             img = add_margin(img, 0, 0, margin, margin, color)
-            fn = os.path.join(os.path.dirname(__file__),
-                              'tmp{}'.format(os.path.splitext(fn)[1]))
-            # print('\tPadding to 16:9')
-            style = '10'
+        else:  # wide
+            need_h = width / 16 * 9
+            margin = int((need_h - height) / 2 + .5)
+            img = add_margin(img, margin, margin, 0, 0, (0, 0, 0))
+        with tempfile.TemporaryDirectory() as tmpdir:
+            fn = os.path.join(tmpdir, 'tmp{}'.format(os.path.splitext(fn)[1]))
             img.save(fn)
-
-    img.close()
-    _setWallpaperWin(fn, style)
-
-
-def set_wallpaper_mac(fn):
-    global last
-    img = Image.open(fn)
-    width, height = img.size
-    exif = img.getexif()
-    flip = False
-    if exif.get(274, 1) != 1:   # check for rotation
-        width, height = height, width
-        flip = True
-    ratio = width / height / (16/9)
-    print(os.path.basename(fn))
-    if not last or fn != last[-1]:
-        last.append(fn)
-        if len(last) > n_last:
-            last = last[-n_last:]
-        with open(os.path.join(os.path.dirname(__file__), 'last.txt'), 'w+') as f:
-            json.dump(last, f, indent=2)
-    print('    - {} x {}'.format(width, height))
-    if ratio < .7:
-        borders = [img.getpixel((i, j)) for i in (0, 1, 2, width-3, width-2, width-1)
-                   for j in range(height)]
-        counts = Counter(borders)
-        color, cts = counts.most_common(1)[0]
-        sim_ratio = cts / len(borders)
-        if sim_ratio > .01:
-            print('    - Edge Similarity: {}'.format(round(sim_ratio, 2)))
-        if sim_ratio <= .05:
-            color = (0, 0, 0)
-        if height > 3000:
-            img = img.resize((int(width / height * 3000 + .5), 3000))
-            width, height = img.size
-        need_w = height / 9 * 16
-        margin = int((need_w - width) / 2 + .5)
-        img = add_margin(img, 0, 0, margin, margin, color)
-        fn = os.path.join(os.path.dirname(__file__),
-                          'tmp{}'.format(os.path.splitext(fn)[1]))
-        img.save(fn)
-
-    img.close()
-    _setWallpaperMac(fn)
-
-set_wallpaper = set_wallpaper_mac if os.name == 'posix' else set_wallpaper_win
+            img.close()
+            _setWallpaper(fn)
+            if os.name == 'nt':
+                time.sleep(1)
 
 
 def change_wallpaper(*args):
@@ -211,7 +184,8 @@ class TabSetting(wx.Panel):
         self.interval_ctrl = wx.TextCtrl(self)
         self.interval_ctrl.write(str(GLOBAL_config['interval']))
         hbox1.Add(self.interval_ctrl, proportion=1)
-        vbox.Add(hbox1, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+        vbox.Add(hbox1, flag=wx.EXPAND | wx.LEFT |
+                 wx.RIGHT | wx.TOP, border=10)
 
         hbox2 = wx.BoxSizer(wx.HORIZONTAL)
         st1 = wx.StaticText(self, label='Folder')
@@ -219,7 +193,8 @@ class TabSetting(wx.Panel):
         self.folder_ctrl = wx.DirPickerCtrl(self)
         self.folder_ctrl.SetPath(GLOBAL_config['folder'])
         hbox2.Add(self.folder_ctrl, proportion=1)
-        vbox.Add(hbox2, flag=wx.EXPAND | wx.LEFT | wx.RIGHT | wx.TOP, border=10)
+        vbox.Add(hbox2, flag=wx.EXPAND | wx.LEFT |
+                 wx.RIGHT | wx.TOP, border=10)
 
         vbox.Add((-1, 25))
         hbox5 = wx.BoxSizer(wx.HORIZONTAL)
@@ -368,6 +343,10 @@ class Example(wx.Frame):
         def clipboard(*args):
             scheduler.pause()
             pd.DataFrame([current_fn]).to_clipboard(index=False, header=False)
+            mod_fn = current_fn.replace(syndrive, r'D:\SynologyDrive') \
+                .replace('/', '\\')
+            with open(os.path.join(os.path.dirname(__file__), 'mark.txt'), 'a+') as f:
+                f.write(f'{mod_fn}\n')
 
         def delete(evt):
             need_to_resume = False
